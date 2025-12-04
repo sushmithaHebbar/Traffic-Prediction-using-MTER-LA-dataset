@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>METR-LA Traffic Prediction Dashboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Chart.js for interactive plotting -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    <style>
+        /* Custom font and basic styling */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .card {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        /* Style for sticky table header in scrollable container */
+        .sticky-header th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        /* Custom scrollbar for the input window */
+        #historical-data-input::-webkit-scrollbar {
+            width: 6px;
+        }
+        #historical-data-input::-webkit-scrollbar-thumb {
+            background-color: #94a3b8; /* Slate gray thumb */
+            border-radius: 3px;
+        }
+        #historical-data-input::-webkit-scrollbar-track {
+            background-color: #f1f5f9;
+        }
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+        #loader {
+    transition: opacity 0.3s ease-in-out;
+}
+
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+    <!-- Loader Overlay -->
+<div id="loader" class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50 hidden">
+    <div class="w-20 h-20 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+</div>
+
+    <!-- Hidden input to store current sensor index for LLM calls -->
+    <input type="hidden" id="current-sensor-index" value="10">
+
+    <!-- GEMINI API Modal (Kept from previous versions) -->
+    <div id="gemini-modal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 opacity-0 pointer-events-none">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 transform transition-all duration-300">
+            <!-- Modal Header -->
+            <div class="flex justify-between items-center p-5 border-b border-gray-200">
+                <h3 id="modal-title" class="text-xl font-bold text-blue-800"></h3>
+                <button id="close-modal" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <!-- Modal Body -->
+            <div class="p-5 max-h-96 overflow-y-auto">
+                <div id="modal-content" class="text-gray-700 leading-relaxed">
+                    <!-- LLM content will be inserted here -->
+                </div>
+                <ul id="modal-sources" class="list-disc pl-5"></ul>
+            </div>
+            <!-- Modal Footer -->
+            <div class="p-4 border-t border-gray-200 text-right">
+                <button id="modal-close-btn" class="py-2 px-4 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition duration-150">Close</button>
+            </div>
+        </div>
+    </div>
+    <!-- END GEMINI API Modal -->
+
+    <div class="max-w-6xl mx-auto bg-white p-6 sm:p-10 rounded-xl card">
+        <header class="text-center mb-6 border-b pb-4">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-blue-800">METR-LA Traffic Speed Dashboard</h1>
+            <p class="text-lg text-gray-500 mt-2">LSTM Prediction Visualization</p>
+        </header>
+
+        <!-- VIEW SWITCHER TABS -->
+        <div class="flex border-b border-gray-300 bg-gray-50 rounded-t-lg overflow-hidden mb-6">
+            <button id="eval-tab" class="flex-1 py-3 text-lg font-semibold border-r border-gray-300 text-gray-700 hover:bg-blue-100 transition duration-150 rounded-tl-lg">
+                Model Evaluation (200 Steps)
+            </button>
+            <button id="forecast-tab" class="flex-1 py-3 text-lg font-semibold text-gray-700 hover:bg-blue-100 transition duration-150">
+                Real-time Forecast (12-Step Input)
+            </button>
+        </div>
+
+        <!-- CONTROL PANEL -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8 p-5 bg-blue-50 rounded-lg border border-blue-200">
+            
+            
+            <!-- EVALUATION CONTROLS (Default View) -->
+            <div id="evaluation-controls" class="col-span-full">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+                    <div>
+                        <label for="sensor-select-eval" class="block text-sm font-medium text-gray-700">Select Sensor ID (0-206)</label>
+                        <select id="sensor-select-eval" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"></select>
+                    </div>
+                    
+                
+                    <div>
+                        <label for="start-step" class="block text-sm font-medium text-gray-700">Start Time Step (0-1000)</label>
+                        <input type="number" id="start-step" value="0" min="0" max="1000" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <button id="run-evaluation-btn" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md font-semibold hover:bg-blue-700 transition duration-150 shadow-md">
+                            Run Evaluation Plot
+                        </button>
+                    </div>
+                </div>
+                <div class="col-span-full mt-4">
+                    <p id="status-message-eval" class="text-xs text-center p-2 rounded-lg bg-white border text-gray-500">Evaluation Mode: Ready.</p>
+                </div>
+            </div>
+
+            <!-- FORECAST CONTROLS (Hidden by Default) -->
+            <div id="forecast-controls" class="hidden col-span-full">
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div class="sm:col-span-1">
+                        <label for="sensor-select-forecast" class="block text-sm font-medium text-gray-700">Target Sensor (0 - 206):</label>
+                        <select id="sensor-select-forecast" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"></select>
+                    </div>
+
+                    <div class="sm:col-span-1 flex flex-col justify-end">
+                         <button id="generate-random-btn" class="w-full bg-yellow-500 text-white py-2 px-4 rounded-md font-semibold hover:bg-yellow-600 transition duration-150 shadow-md">
+                            Load Example Data
+                        </button>
+                    </div>
+
+                    <div class="sm:col-span-2 flex flex-col justify-end">
+                        <button id="predict-traffic-btn" class="w-full bg-green-600 text-white py-2 px-4 rounded-md font-semibold hover:bg-green-700 transition duration-150 shadow-md">
+                            GENERATE 12-STEP FORECAST
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <!-- Historical Data Input -->
+                    <div class="sm:col-span-1">
+                        <label for="historical-data-input" class="block text-sm font-semibold text-gray-700 mb-2">
+                            Enter 12 Historical Speeds (T-11 to T)
+                        </label>
+                        <textarea 
+                            id="historical-data-input" 
+                            rows="12" 
+                            class="w-full p-2 border border-gray-300 rounded-lg font-mono text-sm resize-none bg-white focus:ring-blue-500 focus:border-blue-500 shadow-inner" 
+                            placeholder="e.g. 55.2&#10;56.1&#10;... (12 lines total)"></textarea>
+                    </div>
+
+                    <!-- Forecast Results -->
+                    <div class="sm:col-span-2 space-y-4">
+                        <div id="forecast-summary-metrics" class="grid grid-cols-2 gap-4 text-center">
+                            <div class="bg-gray-100 p-3 rounded-lg border border-gray-200">
+                                <p class="text-sm font-medium text-gray-500">Speed at Time T (Actual)</p>
+                                <p id="last-actual" class="text-xl font-bold text-gray-800">--</p>
+                            </div>
+                            <div class="bg-green-100 p-3 rounded-lg border border-green-200">
+                                <p class="text-sm font-medium text-green-600">Predicted Speed (Time T+1)</p>
+                                <p id="next-predicted" class="text-xl font-bold text-green-700">--</p>
+                            </div>
+                        </div>
+
+                        <!-- Gemini AI Buttons -->
+                        <div class="border-t pt-4 mt-4">
+                            <h3 class="text-lg font-semibold mb-3 text-blue-700">✨ AI-Powered Analysis</h3>
+                            <div class="flex flex-col sm:flex-row gap-3">
+                                <button id="congestion-analysis-btn" class="hidden flex-1 py-2 px-4 bg-red-600 text-white font-medium rounded-lg shadow-md hover:bg-red-700 transition duration-150">
+                                    Analyze Congestion Causes
+                                </button>
+                                <button id="summary-draft-btn" class="hidden flex-1 py-2 px-4 bg-purple-600 text-white font-medium rounded-lg shadow-md hover:bg-purple-700 transition duration-150">
+                                    Draft Prediction Summary
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <p id="status-message-forecast" class="mt-4 text-xs text-center p-2 rounded-lg bg-white border text-gray-500">Forecast Mode: Ready. Use 'Load Example Data' to begin.</p>
+            </div>
+        </div>
+
+        <!-- Error Message Box -->
+        <div id="error-message" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+            <span id="error-text" class="block sm:inline"></span>
+        </div>
+
+        <!-- Visualization Area -->
+        <div class="p-6 bg-gray-50 rounded-lg border mb-8">
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4 text-center">Traffic Speed: Actual vs. Predicted</h2>
+            <div class="relative h-96">
+                <canvas id="trafficChart"></canvas>
+            </div>
+        </div>
+        
+        <!-- Numerical Results Area -->
+        <div class="p-6 bg-white rounded-lg border">
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4 text-center">Numerical Results</h2>
+            
+            <!-- Summary Metrics - Evaluation Mode -->
+            <div id="evaluation-results" class="space-y-4">
+                <div class="grid grid-cols-2 gap-4 text-center">
+                    <div class="bg-gray-100 p-3 rounded-lg border border-gray-200">
+                        <p class="text-sm font-medium text-gray-500">Average Actual Speed (200 Steps)</p>
+                        <p id="avg-actual-eval" class="text-xl font-bold text-gray-800">--</p>
+                    </div>
+                    <div class="bg-blue-50 p-3 rounded-lg border border-blue-200">
+                        <p class="text-sm font-medium text-blue-500">Average Predicted Speed (200 Steps)</p>
+                        <p id="avg-predicted-eval" class="text-xl font-bold text-blue-700">--</p>
+                    </div>
+                </div>
+                <div id="results-table-container" class="max-h-80 overflow-y-auto border rounded-lg">
+                    <p id="results-placeholder" class="text-center text-gray-500 italic p-6">Select a sensor and time step above to view the numerical results.</p>
+                </div>
+            </div>
+            
+             <!-- Numerical Results - Forecast Mode (Hidden) -->
+             <div id="forecast-results" class="hidden">
+                 <div id="forecast-table-container" class="max-h-80 overflow-y-auto border rounded-lg">
+                    <p class="text-center text-gray-500 italic p-6">Run a forecast to see the 12-step numerical predictions here.</p>
+                </div>
+             </div>
+        </div>
+
+        <footer class="mt-8 text-center text-sm text-gray-500">
+            Data and predictions are simulated based on the METR-LA dataset structure and LSTM architecture.
+        </footer>
+    </div>
+
+    <script>
+        // --- CONSTANTS ---
+        const API_BASE_URL = 'http://127.0.0.1:5000/api'; // Flask API endpoint
+        const MAX_STEPS = 200; 
+        const SEQUENCE_LENGTH = 12; 
+        const NUM_SENSORS = 207;
+        const CONGESTION_THRESHOLD = 35.0; 
+
+        let trafficChart = null;
+        let currentMode = 'evaluation';
+        
+        // --- GEMINI API CONFIGURATION ---
+        const GENERATION_MODEL = 'gemini-2.5-flash-preview-09-2025';
+        let geminiApiKey = null;
+            function showLoader() {
+    document.getElementById('loader').classList.remove('hidden');
+}
+
+function hideLoader() {
+    document.getElementById('loader').classList.add('hidden');
+}
+
+        async function ensureGeminiApiKey() {
+            if (geminiApiKey) return geminiApiKey;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/config`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.error || 'Server rejected config request.');
+                }
+                if (!data.geminiApiKey) {
+                    throw new Error(' API key missing in config response.');
+                }
+
+                geminiApiKey = data.geminiApiKey;
+                return geminiApiKey;
+            } catch (error) {
+                console.error('Gemini config error:', error);
+                setError(`Configuration Error: ${error.message}`);
+                throw error;
+            }
+        }
+
+        // --- API UTILITIES (Backend communication) ---
+        
+        async function fetchWithRetry(url, options, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(`API Error: ${response.status} - ${error.error?.message || 'Unknown error'}`);
+                    }
+                    return response.json();
+                } catch (error) {
+                    if (i === maxRetries - 1) throw error;
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+        
+        async function fetchPredictionData(endpoint, payload) {
+            const url = `${API_BASE_URL}/${endpoint}`;
+            try {
+                const response = await fetchWithRetry(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                return response;
+            } catch (error) {
+                setError(`Backend Error: Could not fetch data from ${endpoint}. Ensure the Flask server is running.`);
+                console.error("Backend fetch error:", error);
+                return null;
+            }
+        }
+
+        // --- CORE UI LOGIC ---
+
+        function setError(message) {
+            const errorDiv = document.getElementById('error-message');
+            const errorText = document.getElementById('error-text');
+            if (message) {
+                errorText.textContent = message;
+                errorDiv.classList.remove('hidden');
+            } else {
+                errorText.textContent = '';
+                errorDiv.classList.add('hidden');
+            }
+        }
+        
+        function displayAverageSpeeds(dataSlice) {
+            const avgActualEl = document.getElementById('avg-actual-eval');
+            const avgPredictedEl = document.getElementById('avg-predicted-eval');
+
+            if (dataSlice.length === 0) {
+                avgActualEl.textContent = "--";
+                avgPredictedEl.textContent = "--";
+                return;
+            }
+
+            const totalActual = dataSlice.reduce((sum, d) => sum + d[0], 0);
+            const totalPredicted = dataSlice.reduce((sum, d) => sum + d[1], 0);
+            
+            const avgActual = (totalActual / dataSlice.length).toFixed(2) + " MPH";
+            const avgPredicted = (totalPredicted / dataSlice.length).toFixed(2) + " MPH";
+
+            avgActualEl.textContent = avgActual;
+            avgPredictedEl.textContent = avgPredicted;
+        }
+
+        /**
+         * Fetches data for and updates the chart/table for the Evaluation mode.
+         */
+ async function runEvaluation() {
+    setError(null);
+    showLoader();  // <-- show loader
+
+    const sensorId = parseInt(document.getElementById('sensor-select-eval').value);
+    const startStep = parseInt(document.getElementById('start-step').value);
+
+    if (isNaN(sensorId) || sensorId < 0 || sensorId >= NUM_SENSORS) {
+        setError("Invalid Sensor ID. Value must be between 0 and 206.");
+        hideLoader();
+        return;
+    }
+    if (isNaN(startStep) || startStep < 0) {
+        setError(`Invalid Start Time Step. Value must be non-negative.`);
+        hideLoader();
+        return;
+    }
+
+    const payload = { sensorId, startStep };
+    const data = await fetchPredictionData('evaluation', payload);
+
+    hideLoader();  // <-- hide loader after response
+
+    if (!data || data.error) {
+        setError(data ? data.error : "Failed to load evaluation data from backend.");
+        return;
+    }
+
+    updateChartData(data.labels, data.actualSpeeds, data.predictedSpeeds);
+    trafficChart.options.plugins.title.text = `Sensor ${sensorId} Traffic Evaluation (Steps ${startStep} to ${data.labels[data.labels.length - 1]})`;
+    trafficChart.options.scales.x.title.text = 'Time Step Index';
+    trafficChart.options.scales.y.max = 75;
+    trafficChart.options.scales.y.min = 15;
+    trafficChart.update();
+
+    displayAverageSpeeds(data.dataSlice);
+    displayEvaluationTable(sensorId, startStep, data.dataSlice);
+
+    document.getElementById('status-message-eval').textContent = `Evaluation for Sensor ${sensorId} loaded successfully.`;
+    document.getElementById('status-message-eval').classList.remove('text-gray-500', 'bg-white');
+    document.getElementById('status-message-eval').classList.add('text-blue-600', 'bg-blue-100');
+}
+
+        /**
+         * Fetches data for and updates the chart/table for the Forecast mode.
+         */
+        async function predictTraffic() {
+            setError(null);
+            const sensorSelect = document.getElementById('sensor-select-forecast');
+            const sensorIndex = parseInt(sensorSelect.value);
+            const inputElement = document.getElementById('historical-data-input');
+            const outputElement = document.getElementById('next-predicted');
+            const lastActualElement = document.getElementById('last-actual');
+            const statusElement = document.getElementById('status-message-forecast');
+            const congestionBtn = document.getElementById('congestion-analysis-btn');
+            const summaryBtn = document.getElementById('summary-draft-btn');
+
+            congestionBtn.classList.add('hidden');
+            summaryBtn.classList.add('hidden');
+            outputElement.classList.remove('text-red-700', 'text-green-700');
+            outputElement.classList.add('text-gray-400');
+            outputElement.textContent = '--';
+            lastActualElement.textContent = '--';
+
+            const speeds = inputElement.value.trim().split('\n').map(s => parseFloat(s.trim()));
+            const validSpeeds = speeds.filter(s => !isNaN(s));
+
+            if (validSpeeds.length !== SEQUENCE_LENGTH) {
+                setError(`Error: Please enter exactly ${SEQUENCE_LENGTH} historical speed values (one per line).`);
+                statusElement.textContent = `Error: Requires ${SEQUENCE_LENGTH} speed values.`;
+                statusElement.classList.remove('text-blue-600', 'bg-blue-100');
+                statusElement.classList.add('text-red-600', 'bg-red-100');
+                return;
+            }
+
+            const payload = { sensorId: sensorIndex, historicalData: validSpeeds };
+            const data = await fetchPredictionData('forecast', payload);
+
+            if (!data || data.error) {
+                setError(data ? data.error : "Failed to load forecast data from backend.");
+                return;
+            }
+            
+            const predictedSpeeds = data.predictedSpeeds;
+            const nextStepPrediction = predictedSpeeds[0]; 
+            const lastActualSpeed = validSpeeds[SEQUENCE_LENGTH - 1];
+
+            // Update UI with the single next-step prediction
+            outputElement.textContent = nextStepPrediction.toFixed(2) + ' MPH';
+            lastActualElement.textContent = lastActualSpeed.toFixed(2) + ' MPH';
+
+            if (nextStepPrediction < CONGESTION_THRESHOLD) {
+                outputElement.classList.add('text-red-700', 'font-bold');
+                congestionBtn.classList.remove('hidden');
+            } else {
+                outputElement.classList.add('text-green-700', 'font-bold');
+            }
+            
+            // Show summary button and update sensor ID for LLM
+            summaryBtn.classList.remove('hidden');
+            document.getElementById('current-sensor-index').value = sensorIndex; 
+
+            statusElement.textContent = `Forecast for Sensor ${sensorIndex} generated successfully (12 steps).`;
+            statusElement.classList.remove('text-red-600', 'bg-red-100');
+            statusElement.classList.add('text-blue-600', 'bg-blue-100');
+
+            updateForecastChart(validSpeeds, predictedSpeeds, sensorIndex);
+            displayForecastTable(validSpeeds, predictedSpeeds);
+        }
+
+        /**
+         * Loads realistic random data into the forecast input area and triggers prediction.
+         * NOTE: This simulation must be implemented purely on the frontend as it can't query
+         * the mock data directly without a dedicated backend endpoint for fetching historical data.
+         * For demonstration, we'll use local mock data if available, otherwise just generate random.
+         */
+        function generateRandomForecastData() {
+            const sensorIndex = parseInt(document.getElementById('sensor-select-forecast').value);
+            
+            // Generate a plausible sequence of 12 speeds
+            const speeds = [];
+            let lastSpeed = (Math.random() * 30 + 40); 
+            for (let i = 0; i < SEQUENCE_LENGTH; i++) {
+                lastSpeed += (Math.random() - 0.5) * 5; 
+                lastSpeed = Math.min(75, Math.max(30, lastSpeed)); 
+                speeds.push(lastSpeed.toFixed(1));
+            }
+            document.getElementById('historical-data-input').value = speeds.join('\n');
+            
+            predictTraffic();
+        }
+
+        // --- CHARTING FUNCTIONS ---
+
+        function setupChart() {
+            const ctx = document.getElementById('trafficChart').getContext('2d');
+            
+            if (trafficChart) {
+                trafficChart.destroy();
+            }
+
+            trafficChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Actual/Historical Speed (MPH)',
+                            data: [],
+                            borderColor: 'rgb(59, 130, 246)', 
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Predicted/Forecast Speed (MPH)',
+                            data: [],
+                            borderColor: 'rgb(234, 88, 12)', 
+                            backgroundColor: 'rgba(234, 88, 12, 0.1)',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            tension: 0.4,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            title: { display: true, text: 'Traffic Speed (MPH)' },
+                            min: 15,
+                            max: 75
+                        },
+                        x: {
+                            title: { display: true, text: 'Time Step' }
+                        }
+                    },
+                    plugins: {
+                        legend: { position: 'top' },
+                        title: { display: true, text: 'Traffic Speed: Actual vs. Predicted', font: { size: 16 } }
+                    }
+                }
+            });
+        }
+        
+        function updateChartData(labels, actualData, predictedData) {
+            trafficChart.data.labels = labels;
+            trafficChart.data.datasets[0].data = actualData;
+            trafficChart.data.datasets[1].data = predictedData;
+        }
+
+        function updateForecastChart(historicalData, predictedData, sensorIndex) {
+            const labels = [];
+            for (let i = -SEQUENCE_LENGTH + 1; i <= SEQUENCE_LENGTH; i++) {
+                labels.push(i === 0 ? 'T (Now)' : i < 0 ? `T${i}` : `T+${i}`);
+            }
+
+            const actualDataset = [...historicalData, ...Array(SEQUENCE_LENGTH).fill(null)];
+            const predictedDataset = [...Array(SEQUENCE_LENGTH).fill(null), ...predictedData.slice(0, SEQUENCE_LENGTH)];
+
+            updateChartData(labels, actualDataset, predictedDataset);
+            trafficChart.options.plugins.title.text = `Sensor ${sensorIndex} 12-Step Forecast`;
+            trafficChart.options.scales.x.title.text = 'Time Step';
+            trafficChart.options.scales.y.max = 90;
+            trafficChart.options.scales.y.min = 20;
+            trafficChart.update();
+        }
+
+        // --- NUMERICAL TABLE FUNCTIONS ---
+
+        function displayEvaluationTable(sensorId, startStep, dataSlice) {
+            const container = document.getElementById('results-table-container');
+            let tableHtml = `
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-100 sticky-header">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time Step</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actual Speed (MPH)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-blue-50">Predicted Speed (MPH)</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+            `;
+
+            dataSlice.forEach((d, index) => {
+                const timeStep = index + startStep;
+                const actual = d[0].toFixed(2);
+                const predicted = d[1].toFixed(2);
+                const isHighError = Math.abs(d[0] - d[1]) > 5;
+                
+                tableHtml += `
+                    <tr class="${isHighError ? 'bg-red-50' : 'hover:bg-gray-50'}">
+                        <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900">${timeStep}</td>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm text-gray-700">${actual}</td>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm font-semibold text-blue-600">${predicted}</td>
+                    </tr>
+                `;
+            });
+
+            tableHtml += `
+                    </tbody>
+                </table>
+            `;
+            container.innerHTML = tableHtml;
+        }
+
+        function displayForecastTable(historicalData, predictedData) {
+            const container = document.getElementById('forecast-table-container');
+            let tableHtml = `
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-100 sticky-header">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time Step</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actual Speed (Historical)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-blue-50">Predicted Speed (Future)</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+            `;
+            
+            // 1. Historical Data (T-11 to T)
+            historicalData.forEach((speed, index) => {
+                const timeStep = index - SEQUENCE_LENGTH + 1;
+                const timeLabel = timeStep === 0 ? 'T (Current)' : `T${timeStep}`;
+                const speedClass = timeStep === 0 ? 'font-bold text-gray-800 bg-gray-50' : 'text-gray-700';
+
+                tableHtml += `
+                    <tr>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900">${timeLabel}</td>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm ${speedClass}">${speed.toFixed(2)}</td>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm text-gray-400">---</td>
+                    </tr>
+                `;
+            });
+
+            // 2. Predicted Data (T+1 to T+12)
+            predictedData.forEach((speed, index) => {
+                const timeStep = index + 1;
+                const speedClass = speed < CONGESTION_THRESHOLD ? 'text-red-600 font-bold bg-red-50' : 'text-blue-600 font-semibold';
+
+                tableHtml += `
+                    <tr>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm font-medium text-gray-900">T+${timeStep}</td>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm text-gray-400">---</td>
+                        <td class="px-6 py-2 whitespace-nowrap text-sm ${speedClass}">${speed.toFixed(2)}</td>
+                    </tr>
+                `;
+            });
+
+
+            tableHtml += `
+                    </tbody>
+                </table>
+            `;
+            container.innerHTML = tableHtml;
+        }
+
+        // --- GEMINI API CALLS (Frontend handles LLM) ---
+
+        function showModal(title, content, sources) {
+            const modal = document.getElementById('gemini-modal');
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-content').innerHTML = content;
+            
+            const sourcesList = document.getElementById('modal-sources');
+            sourcesList.innerHTML = '';
+            if (sources && sources.length > 0) {
+                sourcesList.innerHTML = '<p class="text-sm font-semibold mt-4 mb-2">Sources (Google Search Grounding):</p>';
+                sources.forEach(source => {
+                    const li = document.createElement('li');
+                    li.className = 'text-xs text-gray-600 truncate';
+                    li.innerHTML = `<a href="${source.uri}" target="_blank" class="text-blue-500 hover:underline">${source.title || source.uri}</a>`;
+                    sourcesList.appendChild(li);
+                });
+            }
+
+            modal.classList.remove('opacity-0', 'pointer-events-none');
+            modal.classList.add('opacity-100');
+        }
+
+        async function analyzeCongestion(predictedSpeed) {
+            showModal('Congestion Analysis', '<p id="loading-text" class="text-center text-gray-500 py-8">Searching for real-time traffic incidents...</p>', null);
+            
+            const userQuery = `What are the current major traffic incidents or road closures in Los Angeles County?`;
+
+            let apiKeyValue;
+            try {
+                apiKeyValue = await ensureGeminiApiKey();
+            } catch (error) {
+                showModal('Configuration Error', `<p class="text-red-500">Unable to load Gemini API key: ${error.message}</p>`, null);
+                return;
+            }
+            
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GENERATION_MODEL}:generateContent?key=${apiKeyValue}`;
+
+            const systemPrompt = "You are a specialized traffic analysis assistant. Based on the Google search results, provide a concise, single-paragraph summary of the most relevant and current traffic incidents, road closures, or major events in Los Angeles that could cause congestion. State clearly if no specific current incidents are found. Do not mention the predicted speed. Ignore the astrike";
+            
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            try {
+                const result = await fetchWithRetry(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const candidate = result.candidates?.[0];
+                let generatedText = "Could not retrieve current traffic analysis. Try again.";
+                let sources = [];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    generatedText = candidate.content.parts[0].text.replace(/\n/g, '<br>');
+
+                    const groundingMetadata = candidate.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title); 
+                    }
+                }
+                
+                showModal(`Congestion Analysis (Predicted Speed: ${predictedSpeed.toFixed(2)} MPH)`, generatedText, sources);
+
+            } catch (error) {
+                const errorMessage = `<p class="text-red-500">Error retrieving analysis: ${error.message}. Please check your API key and connection.</p>`;
+                showModal('Congestion Analysis Error', errorMessage, null);
+            }
+        }
+
+        async function generatePredictionSummary() {
+            // const sensorIndex = document.getElementById('current-sensor-index').value;
+            const historicalData = document.getElementById('historical-data-input').value.trim().split('\n').map(s => parseFloat(s.trim()));
+            const predictedSpeeds = trafficChart.data.datasets[1].data.slice(SEQUENCE_LENGTH).filter(s => s !== null); 
+            const nextStepSpeed = predictedSpeeds[0];
+            
+            showModal('Prediction Summary Draft', '<p id="loading-text" class="text-center text-gray-500 py-8">Drafting communication report...</p>', null);
+
+            const speedTrend = predictedSpeeds.slice(0, 5);
+            const maxSpeed = Math.max(...speedTrend);
+            const minSpeed = Math.min(...speedTrend);
+
+            let assessment = '';
+            if (nextStepSpeed < CONGESTION_THRESHOLD && minSpeed < CONGESTION_THRESHOLD) {
+                assessment = 'severe, immediate congestion is predicted and persists over the next five time steps.';
+            } else if (nextStepSpeed < CONGESTION_THRESHOLD) {
+                assessment = 'moderate congestion is predicted for the next time step, but is expected to clear soon.';
+            } else if (maxSpeed > 65) {
+                 assessment = 'fast-moving traffic conditions are expected, with speeds significantly above average.';
+            } else {
+                assessment = 'stable and average traffic conditions are expected to continue.';
+            }
+
+            const prompt = `Act as a senior traffic operations manager.. Write a brief, professional, 4-sentence summary report on the traffic forecast for Sensor.
+                The report must address:
+                1. The immediate T+1 prediction (${nextStepSpeed.toFixed(2)} mph).
+                2. The overall trend assessment: ${assessment}.
+                3. A call to action or operational recommendation based on the assessment (e.g., 'monitor closely' or 'no immediate action needed').
+                4. The historical context (The last historical speed was ${historicalData[SEQUENCE_LENGTH - 1].toFixed(2)} mph).
+                The report should be formal and concise.`;
+            
+            let apiKeyValue;
+            try {
+                apiKeyValue = await ensureGeminiApiKey();
+            } catch (error) {
+                showModal('Configuration Error', `<p class="text-red-500">Unable to load Gemini API key: ${error.message}</p>`, null);
+                return;
+            }
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GENERATION_MODEL}:generateContent?key=${apiKeyValue}`;
+
+            try {
+                const result = await fetchWithRetry(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                });
+
+                const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text.replace(/\n/g, '<br><br>') || "Error: Failed to generate summary.";
+                
+                showModal('Prediction Summary', generatedText, null);
+
+            } catch (error) {
+                const errorMessage = `<p class="text-red-500">Error generating summary: ${error.message}. Please check your API key and connection.</p>`;
+                showModal('Prediction Summary Draft Error', errorMessage, null);
+            }
+        }
+        
+        // --- INITIALIZATION ---
+
+        function closeModal() {
+            const modal = document.getElementById('gemini-modal');
+            modal.classList.remove('opacity-100');
+            modal.classList.add('opacity-0', 'pointer-events-none');
+        }
+
+        function switchView(mode) {
+            currentMode = mode;
+            
+            const isEval = mode === 'evaluation';
+
+            // Toggle controls and results sections
+            document.getElementById('evaluation-controls').classList.toggle('hidden', !isEval);
+            document.getElementById('forecast-controls').classList.toggle('hidden', isEval);
+            document.getElementById('evaluation-results').classList.toggle('hidden', !isEval);
+            document.getElementById('forecast-results').classList.toggle('hidden', isEval);
+
+            // Toggle tab active state
+            document.getElementById('eval-tab').classList.toggle('bg-blue-600', isEval);
+            document.getElementById('eval-tab').classList.toggle('text-white', isEval);
+            document.getElementById('forecast-tab').classList.toggle('bg-blue-600', !isEval);
+            document.getElementById('forecast-tab').classList.toggle('text-white', !isEval);
+
+        if (!isEval) {
+    generateRandomForecastData(); // Only run forecast automatically
+}
+
+        }
+
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setupChart();
+            
+            // Populate all sensor selection dropdowns
+            const sensorSelects = document.querySelectorAll('select[id^="sensor-select"]');
+            sensorSelects.forEach(select => {
+                for (let i = 0; i < NUM_SENSORS; i++) {
+                    const option = document.createElement('option');
+                    option.value = i;
+                    option.textContent = `Sensor ${i}`;
+                    select.appendChild(option);
+                }
+            });
+
+            // Set up event listeners
+            // document.getElementById('sensor-select-eval').addEventListener('change', runEvaluation);
+            document.getElementById('run-evaluation-btn').addEventListener('click', runEvaluation);
+            
+            document.getElementById('predict-traffic-btn').addEventListener('click', predictTraffic);
+            document.getElementById('generate-random-btn').addEventListener('click', generateRandomForecastData);
+            document.getElementById('eval-tab').addEventListener('click', () => switchView('evaluation'));
+            document.getElementById('forecast-tab').addEventListener('click', () => switchView('forecast'));
+            
+            // Modal listeners
+            document.getElementById('close-modal').onclick = closeModal;
+            document.getElementById('modal-close-btn').onclick = closeModal;
+            document.getElementById('congestion-analysis-btn').onclick = () => {
+                const predictedSpeed = parseFloat(document.getElementById('next-predicted').textContent.replace(' MPH', ''));
+                analyzeCongestion(predictedSpeed);
+            };
+            document.getElementById('summary-draft-btn').onclick = generatePredictionSummary;
+            
+            // Initial view setup
+            switchView('evaluation');
+        });
+    </script>
+</body>
+</html>
